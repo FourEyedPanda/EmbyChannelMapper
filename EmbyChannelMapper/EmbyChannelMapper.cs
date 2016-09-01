@@ -232,6 +232,8 @@ namespace EmbyChannelMapper
         private static void UpdateEmbyChannelMappings(string embySite, string authToken, string providerId, string refreshGuideId, Dictionary<int,string> channelMap)
         {
             var client = new RestClient(embySite);
+            var cancelClient = new RestClient(embySite);
+            cancelClient.Timeout = 1000;
             var postRequest = new RestRequest();
             int i = 0;
             Thread cancelThread = new Thread(() =>
@@ -240,12 +242,15 @@ namespace EmbyChannelMapper
                 {
                     var cancelScheduleRequest = new RestRequest("ScheduledTasks/Running/" + refreshGuideId, Method.DELETE);
                     cancelScheduleRequest.AddHeader("X-MediaBrowser-Token", authToken);
-                    var cancelScheduleResponse = client.Execute(cancelScheduleRequest);
-                    client.ExecuteAsync(cancelScheduleRequest, response2 =>
+                    var cancelScheduleResponse = cancelClient.Execute(cancelScheduleRequest);
+                    while (cancelScheduleResponse.Content.Equals("") || cancelScheduleResponse.Content.Contains("504 Gateway Time-out"))
                     {
-                        //Console.WriteLine(response2.Content);
-                    });
-                    Thread.Sleep(500);
+                        cancelClient.Execute(cancelScheduleRequest);
+                    }
+                    if (cancelScheduleResponse.Content.Contains("Cannot cancel a Task unless it is in the Running state"))
+                    {
+                        Thread.Sleep(500);
+                    }
                 }
             });
             cancelThread.Start();
@@ -254,7 +259,7 @@ namespace EmbyChannelMapper
                 i++;
                 var cancelScheduleRequest = new RestRequest("ScheduledTasks/Running/" + refreshGuideId, Method.DELETE);
                 cancelScheduleRequest.AddHeader("X-MediaBrowser-Token", authToken);
-                var cancelScheduleResponse = client.Execute(cancelScheduleRequest);
+                var cancelScheduleResponse = cancelClient.Execute(cancelScheduleRequest);
                 postRequest = new RestRequest("LiveTv/ChannelMappings/", Method.POST);
                 postRequest.AddHeader("X-MediaBrowser-Token", authToken);
                 postRequest.AddParameter("ProviderId", providerId);
@@ -264,7 +269,6 @@ namespace EmbyChannelMapper
                     var content = response.Content;
                     while (content.Equals("") || content.Contains("504 Gateway Time-out"))
                     {
-                        client.Execute(cancelScheduleRequest);
                         response = client.Execute(postRequest);
                         content = response.Content;
                     }
