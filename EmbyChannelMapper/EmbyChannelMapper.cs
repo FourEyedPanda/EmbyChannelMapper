@@ -65,13 +65,22 @@ namespace EmbyChannelMapper
                 //Check if server is reachable
                 if (!CheckForInternetConnection(embySite))
                 {
-                    if (options.Server.StartsWith("http://") && !CheckForInternetConnection("https://" + options.Server))
+                    if (options.Server.StartsWith("http://"))
+                    {
+                        if (!CheckForInternetConnection("https://" + options.Server))
+                        {
+                            Console.WriteLine("Server is not reachable or is not an Emby Server. Hit Enter to Exit...");
+                            Console.ReadLine();
+                            Environment.Exit(100);
+                        }
+                        else embySite = "https://" + options.Server;
+                    }
+                    else
                     {
                         Console.WriteLine("Server is not reachable or is not an Emby Server. Hit Enter to Exit...");
                         Console.ReadLine();
                         Environment.Exit(100);
                     }
-                    else embySite = "https://" + options.Server;
                 }
 
                 //Check if using APIKey
@@ -253,7 +262,7 @@ namespace EmbyChannelMapper
                 postRequest.AddParameter("ProviderChannelNumber", curChanMap.Value);
                 client.ExecuteAsync(postRequest, response => {                 
                     var content = response.Content;
-                    while (content.Equals(""))
+                    while (content.Equals("") || content.Contains("504 Gateway Time-out"))
                     {
                         client.Execute(cancelScheduleRequest);
                         response = client.Execute(postRequest);
