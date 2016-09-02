@@ -16,13 +16,12 @@ namespace EmbyChannelMapper
     class EmbyChannelMapper
     {
         /// <summary>
-        /// Main method.
+        /// 
         /// </summary>
         /// <param name="args"></param>
         ///
         static void Main(string[] args)
         {
-            //Start 
             var watch = System.Diagnostics.Stopwatch.StartNew();
             //Initialize variables needed
             string userName = null;
@@ -33,26 +32,20 @@ namespace EmbyChannelMapper
 
             //Command Line Parsing
             var options = new Options();
-
-            //No arguments at all
             if (args.Length == 0)
             {
                 Console.WriteLine("No arguments defined. Hit Enter to Exit...");
                 Console.ReadLine();
                 Environment.Exit(100);
             }
-
-            //Parse arguments
             if (CommandLine.Parser.Default.ParseArguments(args, options)){
-                
-                //Check if Server is defined. If not exit else continue.
+                //Check if file Exists.
                 if (options.Server == null)
                 {
                     Console.WriteLine("No server defined. Hit Enter to Exit...");
                     Console.ReadLine();
                     Environment.Exit(100);
                 }
-                //Check if http or https is there. If not add it.
                 else
                 {
                     embySite = options.Server;
@@ -61,8 +54,6 @@ namespace EmbyChannelMapper
                         embySite = "http://" + embySite;
                     }
                 }
-
-                //Check if file argument is defined or if file exists. If not exit else continue.
                 if (options.InputFile == null || !File.Exists(options.InputFile))
                 {
                     Console.WriteLine("File does not exist or is undefined. Hit Enter to Exit...");
@@ -71,7 +62,7 @@ namespace EmbyChannelMapper
                 }
                 else xmltvFile = options.InputFile;
 
-                //Check if server is reachable. If it is http://, try https:// as well.
+                //Check if server is reachable
                 if (!CheckForInternetConnection(embySite))
                 {
                     if (options.Server.StartsWith("http://"))
@@ -92,10 +83,10 @@ namespace EmbyChannelMapper
                     }
                 }
 
-                //Check if using APIKey or Username and Password. If arguments are not defined correctly, exit.
+                //Check if using APIKey
                 if (options.APIKey == null)
                 {
-                    //If not using APIKey check to make sure Username and Password is defined
+                    //If not using APIKey check to make sure Username and Password
                     if (options.UserName == null)
                     {
                         Console.WriteLine("Username or APIKey is required. Hit Enter to Exit...");
@@ -119,8 +110,6 @@ namespace EmbyChannelMapper
                 }
                 else authToken = options.APIKey;
             }
-
-            //If parsing fails exit.
             else
             {
                 Console.WriteLine(CommandLine.Parser.DefaultExitCodeFail);
@@ -128,9 +117,8 @@ namespace EmbyChannelMapper
             }
 
 
-            //Command Line finished parsing. Start parsing the xmltv file and put it in the dictionary.
 
-            //Initialize the dictionary where Channel Mappings are stored
+            //Command Line finished parsing. Start the parsing of the xmltv file and put it in the dictionary.
             Dictionary<int, string> channelMap = null;
             Console.WriteLine("Starting to parse file.");
             try
@@ -145,8 +133,8 @@ namespace EmbyChannelMapper
             }
             Console.WriteLine("Created mapping logic from file: " + xmltvFile);
             Console.WriteLine("Running calls against: " + embySite);
-            
             //If authToken is null, username and password was used. Get authToken with that username and password.
+
             if (authToken == null)
             {
                 authToken = EmbyAuthenticate(embySite, userName, password);
@@ -167,25 +155,25 @@ namespace EmbyChannelMapper
             }
 
             //Grab providerId that is needed to put the mappings in.
+
             string providerId = GrabProviderId(embySite, authToken);
             Console.WriteLine("Got ProviderID: " + providerId);
 
             //Grab ID for the Refresh Guide task so we can cancel it
+
             string refreshGuideId = GrabRefreshGuideId(embySite, authToken);
             Console.WriteLine("Got Refresh Guide Task Id: " + refreshGuideId);
 
             //Start mapping the channels.
+
             Console.WriteLine("Starting to map channels in emby...");
             UpdateEmbyChannelMappings(embySite, authToken, providerId, refreshGuideId, channelMap);
 
-            //Now that all mappings are done, we can now run the Refresh Guide Data task.
+            //Now that all mappings are done, let's Refresh Guide Data
             var client = new RestClient(embySite);
             var cancelScheduleRequest = new RestRequest("ScheduledTasks/Running/" + refreshGuideId, Method.POST);
             cancelScheduleRequest.AddHeader("X-MediaBrowser-Token", authToken);
             var cancelScheduleResponse = client.Execute(cancelScheduleRequest);
-
-            //Change timeout to 1 second as we don't want to wait until the Refresh Guide Data task is finished running.
-            client.Timeout = 1000;
             client.ExecuteAsync(cancelScheduleRequest, response =>
             {
             });
@@ -200,11 +188,6 @@ namespace EmbyChannelMapper
             Environment.Exit(0);
         }
 
-        /// <summary>
-        /// Parses the XMLTV file and creates a dictionary mapping tuner channel number to XMLTV Channel ID.
-        /// </summary>
-        /// <param name="inFile">XMLTV file you want to create Channel Mappings from</param>
-        /// <returns>A Dictionary<int,string> of Tuner Number and XMLTV Channel Id</int></returns>
         private static Dictionary<int,string> XmlToChannelMappings(string inFile)
         {
             Dictionary<int, string> result = new Dictionary<int, string>();
@@ -246,23 +229,13 @@ namespace EmbyChannelMapper
             return result;
         }
 
-        /// <summary>
-        /// REST calls to update the channel mappings in the Emby Application.
-        /// </summary>
-        /// <param name="embySite">Emby Server Address</param>
-        /// <param name="authToken">Authentication Token</param>
-        /// <param name="providerId">Live TV Guide Provider ID</param>
-        /// <param name="refreshGuideId">Scheduled Task Refresh Guide ID</param>
-        /// <param name="channelMap">Dictionary of Tuner Channel and XMLTV Channel ID</param>
         private static void UpdateEmbyChannelMappings(string embySite, string authToken, string providerId, string refreshGuideId, Dictionary<int,string> channelMap)
         {
             var client = new RestClient(embySite);
             var cancelClient = new RestClient(embySite);
             cancelClient.Timeout = 1000;
             var postRequest = new RestRequest();
-
-            //Emby starts a Refresh Guide Task after every update to Channel Mappings.
-            //This thread is used to repeatedly send REST calls to cancel the Refresh Guide Task
+            int i = 0;
             Thread cancelThread = new Thread(() =>
             {
                 while (true)
@@ -281,11 +254,12 @@ namespace EmbyChannelMapper
                 }
             });
             cancelThread.Start();
-
-            int i = 0;
-            //Make a REST call for each Channel Mapping in the Dictionary
             foreach (KeyValuePair<int,string> curChanMap in channelMap)
             {
+                i++;
+                var cancelScheduleRequest = new RestRequest("ScheduledTasks/Running/" + refreshGuideId, Method.DELETE);
+                cancelScheduleRequest.AddHeader("X-MediaBrowser-Token", authToken);
+                var cancelScheduleResponse = cancelClient.Execute(cancelScheduleRequest);
                 postRequest = new RestRequest("LiveTv/ChannelMappings/", Method.POST);
                 postRequest.AddHeader("X-MediaBrowser-Token", authToken);
                 postRequest.AddParameter("ProviderId", providerId);
@@ -293,8 +267,6 @@ namespace EmbyChannelMapper
                 postRequest.AddParameter("ProviderChannelNumber", curChanMap.Value);
                 client.ExecuteAsync(postRequest, response => {                 
                     var content = response.Content;
-
-                    //If for some reason we get nothing back or a Time-out error. We will have to retry.
                     while (content.Equals("") || content.Contains("504 Gateway Time-out"))
                     {
                         response = client.Execute(postRequest);
@@ -314,13 +286,6 @@ namespace EmbyChannelMapper
             cancelThread.Abort();
         }
 
-        /// <summary>
-        /// If using Username and Password this method will grab an AuthenticationToken from Emby.
-        /// </summary>
-        /// <param name="embySite">Emby Server URL</param>
-        /// <param name="username">Emby User Username</param>
-        /// <param name="password">Emby User Password</param>
-        /// <returns>AuthenticationToken</returns>
         private static string EmbyAuthenticate(string embySite, string username, string password)
         { 
             string sha1Password = SHA1HashPassword(password);
@@ -358,12 +323,6 @@ namespace EmbyChannelMapper
             return user.AccessToken;
         }
 
-        /// <summary>
-        /// Method to grab LiveTvGuideProviderId so we can add Channel Mappings to that provider Id.
-        /// </summary>
-        /// <param name="embySite">Emby Server URL</param>
-        /// <param name="authToken">Emby AuthenticationToken</param>
-        /// <returns></returns>
         private static string GrabProviderId(string embySite, string authToken)
         {
             var client = new RestClient(embySite);
@@ -397,12 +356,6 @@ namespace EmbyChannelMapper
             return config.LiveTvGuideProviderId;
         }
 
-        /// <summary>
-        /// Grabs the id for the Refresh Guide task so we can use it to end the task.
-        /// </summary>
-        /// <param name="embySite">Emby Server URL</param>
-        /// <param name="authToken">Emby AuthenticationToken</param>
-        /// <returns>Refresh Guide Task ID</returns>
         private static string GrabRefreshGuideId(string embySite, string authToken)
         {
             var client = new RestClient(embySite);
@@ -432,11 +385,6 @@ namespace EmbyChannelMapper
 
         }
 
-        /// <summary>
-        /// Creates SHA1 hash of password for Emby Authentication
-        /// </summary>
-        /// <param name="password">Emby User Password</param>
-        /// <returns>SHA1 hash of Emby User Password</returns>
         private static string SHA1HashPassword(string password)
         {
             SHA1 sha1 = SHA1.Create();
@@ -448,11 +396,6 @@ namespace EmbyChannelMapper
             return sb.ToString();
         }
 
-        /// <summary>
-        /// Creates MD5 hash of password for Emby Authentication
-        /// </summary>
-        /// <param name="password">Emby User Password</param>
-        /// <returns>MD5 hash of Emby User Password</returns>
         private static string MD5HashPassword(string password)
         {
             MD5 md5 = MD5.Create();
@@ -464,11 +407,6 @@ namespace EmbyChannelMapper
             return sb.ToString();
         }
 
-        /// <summary>
-        /// Pings Emby Server to make sure the application can connect and it is an Emby Server
-        /// </summary>
-        /// <param name="server"></param>
-        /// <returns>True if URL leads to an Emby Server</returns>
         public static bool CheckForInternetConnection(String server)
         {
             try
@@ -486,9 +424,6 @@ namespace EmbyChannelMapper
             }
         }
 
-        /// <summary>
-        /// Options class for CommandLineParser
-        /// </summary>
         class Options
         {
             [Option('f', "file",
