@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Text;
 using System.Xml;
-using System.Net;
 using System.Security.Cryptography;
 using RestSharp;
 using Newtonsoft.Json.Linq;
@@ -10,19 +9,22 @@ using System.Threading;
 using CommandLine;
 using CommandLine.Text;
 using System.IO;
+using System.Threading.Tasks;
 
 namespace EmbyChannelMapper
 {
     class EmbyChannelMapper
     {
         /// <summary>
-        /// 
+        /// Main Thread
         /// </summary>
         /// <param name="args"></param>
         ///
         static void Main(string[] args)
         {
+            //Start the clock
             var watch = System.Diagnostics.Stopwatch.StartNew();
+            
             //Initialize variables needed
             string userName = null;
             string embySite = null;
@@ -32,12 +34,14 @@ namespace EmbyChannelMapper
 
             //Command Line Parsing
             var options = new Options();
+
             if (args.Length == 0)
             {
                 Console.WriteLine("No arguments defined. Hit Enter to Exit...");
                 Console.ReadLine();
                 Environment.Exit(100);
             }
+
             if (CommandLine.Parser.Default.ParseArguments(args, options)){
                 //Check if file Exists.
                 if (options.Server == null)
@@ -46,6 +50,8 @@ namespace EmbyChannelMapper
                     Console.ReadLine();
                     Environment.Exit(100);
                 }
+
+                //Add http if http or https is not defined
                 else
                 {
                     embySite = options.Server;
@@ -54,6 +60,8 @@ namespace EmbyChannelMapper
                         embySite = "http://" + embySite;
                     }
                 }
+
+                
                 if (options.InputFile == null || !File.Exists(options.InputFile))
                 {
                     Console.WriteLine("File does not exist or is undefined. Hit Enter to Exit...");
@@ -62,7 +70,7 @@ namespace EmbyChannelMapper
                 }
                 else xmltvFile = options.InputFile;
 
-                //Check if server is reachable
+                //Check if server is reachable. Test out https and http if it was not defined.
                 if (!CheckForInternetConnection(embySite))
                 {
                     if (options.Server.StartsWith("http://"))
@@ -133,8 +141,8 @@ namespace EmbyChannelMapper
             }
             Console.WriteLine("Created mapping logic from file: " + xmltvFile);
             Console.WriteLine("Running calls against: " + embySite);
+            
             //If authToken is null, username and password was used. Get authToken with that username and password.
-
             if (authToken == null)
             {
                 authToken = EmbyAuthenticate(embySite, userName, password);
@@ -155,25 +163,23 @@ namespace EmbyChannelMapper
             }
 
             //Grab providerId that is needed to put the mappings in.
-
             string providerId = GrabProviderId(embySite, authToken);
             Console.WriteLine("Got ProviderID: " + providerId);
 
             //Grab ID for the Refresh Guide task so we can cancel it
-
             string refreshGuideId = GrabRefreshGuideId(embySite, authToken);
             Console.WriteLine("Got Refresh Guide Task Id: " + refreshGuideId);
-
+            
             //Start mapping the channels.
-
             Console.WriteLine("Starting to map channels in emby...");
             UpdateEmbyChannelMappings(embySite, authToken, providerId, refreshGuideId, channelMap);
 
             //Now that all mappings are done, let's Refresh Guide Data
             var client = new RestClient(embySite);
+            client.Timeout = 2000; //Don't want to wait for response as Refresh Guide Task is long.
             var cancelScheduleRequest = new RestRequest("ScheduledTasks/Running/" + refreshGuideId, Method.POST);
             cancelScheduleRequest.AddHeader("X-MediaBrowser-Token", authToken);
-            var cancelScheduleResponse = client.Execute(cancelScheduleRequest);
+            client.Execute(cancelScheduleRequest);
             client.ExecuteAsync(cancelScheduleRequest, response =>
             {
             });
@@ -188,6 +194,11 @@ namespace EmbyChannelMapper
             Environment.Exit(0);
         }
 
+        /// <summary>
+        /// Create a dictionary mapping of XMLTV Channel Id to Emby Tuner Channel #
+        /// </summary>
+        /// <param name="inFile">XMLTV file to parse</param>
+        /// <returns>Dictionary<(int) EmbyTunerChannel, (string) XMLTV Channel ID></returns>
         private static Dictionary<int,string> XmlToChannelMappings(string inFile)
         {
             Dictionary<int, string> result = new Dictionary<int, string>();
@@ -229,13 +240,20 @@ namespace EmbyChannelMapper
             return result;
         }
 
+        /// <summary>
+        /// Update the Mappings using REST calls against the Emby Server
+        /// </summary>
+        /// <param name="embySite">URL for Emby Server</param>
+        /// <param name="authToken">Authentication Token</param>
+        /// <param name="providerId">Live TV Guide Provider ID</param>
+        /// <param name="refreshGuideId">Refresh Guide Scheduled Task ID</param>
+        /// <param name="channelMap">Dictionary of Channel Mappings</param>
         private static void UpdateEmbyChannelMappings(string embySite, string authToken, string providerId, string refreshGuideId, Dictionary<int,string> channelMap)
         {
             var client = new RestClient(embySite);
             var cancelClient = new RestClient(embySite);
-            cancelClient.Timeout = 1000;
+            cancelClient.Timeout = 500; 
             var postRequest = new RestRequest();
-            int i = 0;
             Thread cancelThread = new Thread(() =>
             {
                 while (true)
@@ -249,49 +267,51 @@ namespace EmbyChannelMapper
                     }
                     if (cancelScheduleResponse.Content.Contains("Cannot cancel a Task unless it is in the Running state"))
                     {
-                        Thread.Sleep(500);
+                        //Thread.Sleep(500);
                     }
                 }
             });
             cancelThread.Start();
+            //For each Channel Mapping in Dictionary, try and import it.
             foreach (KeyValuePair<int,string> curChanMap in channelMap)
             {
-                i++;
-                var cancelScheduleRequest = new RestRequest("ScheduledTasks/Running/" + refreshGuideId, Method.DELETE);
-                cancelScheduleRequest.AddHeader("X-MediaBrowser-Token", authToken);
-                var cancelScheduleResponse = cancelClient.Execute(cancelScheduleRequest);
                 postRequest = new RestRequest("LiveTv/ChannelMappings/", Method.POST);
                 postRequest.AddHeader("X-MediaBrowser-Token", authToken);
                 postRequest.AddParameter("ProviderId", providerId);
                 postRequest.AddParameter("TunerChannelNumber", curChanMap.Key);
                 postRequest.AddParameter("ProviderChannelNumber", curChanMap.Value);
-                client.ExecuteAsync(postRequest, response => {                 
-                    var content = response.Content;
-                    while (content.Equals("") || content.Contains("504 Gateway Time-out"))
-                    {
-                        response = client.Execute(postRequest);
-                        content = response.Content;
-                    }
+                var response = client.Execute(postRequest);
+                var content = response.Content;
+                while (content.Equals("") || content.Contains("504 Gateway Time-out"))
+                {
+                    response = client.Execute(postRequest);
+                    content = response.Content;
+                }
 
-                    if (content.Contains("Sequence contains no matching element"))
-                    {
-                        Console.WriteLine("Channel: " + curChanMap.Key + " does not exist on your server. Skipping...");
-                    }
-                    else Console.WriteLine("Channel: " + curChanMap.Key + " Mapped: " + curChanMap.Value + ": \n" + response.Content);
-                });
+                //The channel does not exist in Emby so we can skip it.
+                if (content.Contains("Sequence contains no matching element"))
+                {
+                    Console.WriteLine("Channel: " + curChanMap.Key + " does not exist on your server. Skipping...");
+                }
+                else Console.WriteLine("Channel: " + curChanMap.Key + " Mapped: " + curChanMap.Value + ": \n" + response.Content);
             }
-
-            //Wait 10 seconds so the cancelThread can cancel the last one.
-            Thread.Sleep(10000);
             cancelThread.Abort();
+
         }
 
+        /// <summary>
+        /// REST Call to get AuthenticationToken with username and password
+        /// </summary>
+        /// <param name="embySite">URL For Emby Server</param>
+        /// <param name="username">Emby User Username</param>
+        /// <param name="password">Emby User Password</param>
+        /// <returns>User Authentication Token</returns>
         private static string EmbyAuthenticate(string embySite, string username, string password)
         { 
             string sha1Password = SHA1HashPassword(password);
             string md5Password = MD5HashPassword(password);
             var client = new RestClient(embySite);
-            var request = new RestRequest("Users/AuthenticateByName/", Method.POST);
+            var request = new RestRequest("Users/AuthenticateByName", Method.POST);
             request.AddParameter("Username", username);
             request.AddParameter("Password", sha1Password);
             request.AddParameter("PasswordMd5", md5Password);
@@ -303,14 +323,16 @@ namespace EmbyChannelMapper
             {
                 return "Invalid username or password entered.";
             }
-            int i = 0;
-            while (content == null || content.Equals(""))
+            int i = 0; //count of retries.
+
+            //If content is empty or timed out retry.
+            while (content.Equals("") || content.Contains("504 Gateway Time-out"))
             {
                 i++;
                 Console.WriteLine("Content is Null. Retrying...");
                 response = client.Execute(request);
                 content = response.Content;
-                if (i > 6)
+                if (i > 6) // after 6 retires, give up.
                 {
                     Console.WriteLine("Could not get Authentication Token. Hit Enter to Exit...");
                     Console.ReadLine();
@@ -318,11 +340,18 @@ namespace EmbyChannelMapper
                 }
             }
 
+            //Parse Object then return AccessToken.
             dynamic user = JObject.Parse(content);
             
             return user.AccessToken;
         }
 
+        /// <summary>
+        /// Grab providerID for LiveTv Guide Provider to add Channel Mappings to
+        /// </summary>
+        /// <param name="embySite">Emby Server URL</param>
+        /// <param name="authToken">Emby Authentication Token</param>
+        /// <returns>LiveTv Guide Provider ID</returns>
         private static string GrabProviderId(string embySite, string authToken)
         {
             var client = new RestClient(embySite);
@@ -332,14 +361,16 @@ namespace EmbyChannelMapper
             IRestResponse response = client.Execute(request);
 
             var content = response.Content;
-            int i = 0;
-            while (content == null || content.Equals(""))
+            int i = 0; //Count of Retries.
+
+            //If content is empty or timed out retry.
+            while (content.Equals("") || content.Contains("504 Gateway Time-out"))
             {
                 i++;
                 Console.WriteLine("Content is Null. Retrying...");
                 response = client.Execute(request);
                 content = response.Content;
-                if (i > 6)
+                if (i > 6) //After 6 retries, give up.
                 {
                     Console.WriteLine("Could not get Provider Id. Hit Enter to Exit...");
                     Console.ReadLine();
@@ -347,15 +378,18 @@ namespace EmbyChannelMapper
                 }
             }
 
+            //Parse the Object and then grab LiveTVGuideProviderID
             dynamic config = JObject.Parse(content);
-
-            if(config.LiveTvGuideProviderId == null)
-            {
-                Console.WriteLine(content);
-            }
             return config.LiveTvGuideProviderId;
         }
 
+        /// <summary>
+        /// Grabs the Refresh Guide Task ID so we can cancel it as inserting a channel mapping causes it to fire
+        /// and it holds up the next channel mapping REST calls.
+        /// </summary>
+        /// <param name="embySite">Emby Server URL</param>
+        /// <param name="authToken">Emby Authentication Token</param>
+        /// <returns></returns>
         private static string GrabRefreshGuideId(string embySite, string authToken)
         {
             var client = new RestClient(embySite);
@@ -365,14 +399,16 @@ namespace EmbyChannelMapper
             IRestResponse response = client.Execute(request);
 
             var content = response.Content;
-            int i = 0;
-            while (content == null || content.Equals(""))
+            int i = 0; //Count of retries.
+
+            //If content is empty or timed out, retry.
+            while (content.Equals("") || content.Contains("504 Gateway Time-out"))
             {
                 i++;
                 Console.WriteLine("Content is Null. Retrying...");
                 response = client.Execute(request);
                 content = response.Content;
-                if (i > 6)
+                if (i > 6) //After 6 retries, give up.
                 {
                     Console.WriteLine("Could not get Refresh Guide Task Id. Hit Enter to Exit...");
                     Console.ReadLine();
@@ -385,6 +421,11 @@ namespace EmbyChannelMapper
 
         }
 
+        /// <summary>
+        /// Creates an SHA1 Hash of the Emby User Password
+        /// </summary>
+        /// <param name="password">Emby User Password</param>
+        /// <returns>SHA1 Hash of Emby User Password</returns>
         private static string SHA1HashPassword(string password)
         {
             SHA1 sha1 = SHA1.Create();
@@ -396,6 +437,11 @@ namespace EmbyChannelMapper
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Creates MD5 Hash of Emby User Password
+        /// </summary>
+        /// <param name="password">Emby User Password</param>
+        /// <returns>MD5 Hash of Emby User Password</returns>
         private static string MD5HashPassword(string password)
         {
             MD5 md5 = MD5.Create();
@@ -407,23 +453,32 @@ namespace EmbyChannelMapper
             return sb.ToString();
         }
 
+        /// <summary>
+        /// Check if the site provided is reachable and is actually an Emby Server
+        /// </summary>
+        /// <param name="server">Test URL</param>
+        /// <returns>Boolean reflecting if it is an Emby Server</returns>
         public static bool CheckForInternetConnection(String server)
         {
-            try
+            var client = new RestClient(server);
+            var request = new RestRequest("System/Ping", Method.POST);
+            IRestResponse response = client.Execute(request);
+            var content = response.Content;
+            while (content.Equals("") || content.Contains("504 Gateway Time-out"))
             {
-                var client = new RestClient(server);
-                var request = new RestRequest("System/Ping", Method.POST);
-                IRestResponse response = client.Execute(request);
-                if (response.Content.Equals("Emby Server"))
-                    return true;
-                else return false;
+                response = client.Execute(request);
+                content = response.Content;
             }
-            catch
+            if (response.Content.Equals("Emby Server")) //Emby ping responds with Emby Server then it is an Emby Server
             {
-                return false;
+                return true;
             }
+            else return false;
         }
 
+        /// <summary>
+        /// Class to help with CommandLineParsing
+        /// </summary>
         class Options
         {
             [Option('f', "file",
