@@ -5,11 +5,10 @@ using System.Xml;
 using System.Security.Cryptography;
 using RestSharp;
 using Newtonsoft.Json.Linq;
-using System.Threading;
 using CommandLine;
 using CommandLine.Text;
 using System.IO;
-using System.Threading.Tasks;
+using System.Timers;
 
 namespace EmbyChannelMapper
 {
@@ -18,7 +17,7 @@ namespace EmbyChannelMapper
         /// <summary>
         /// Main Thread
         /// </summary>
-        /// <param name="args"></param>
+        /// <param name="args">Arguments available, File Name, Server Name, ApiKey, Username, Password</param>
         ///
         static void Main(string[] args)
         {
@@ -44,7 +43,7 @@ namespace EmbyChannelMapper
 
             if (CommandLine.Parser.Default.ParseArguments(args, options)){
                 //Check if file Exists.
-                if (options.Server == null)
+                //if (options.Server == null)
                 {
                     Console.WriteLine("No server defined. Hit Enter to Exit...");
                     Console.ReadLine();
@@ -251,27 +250,15 @@ namespace EmbyChannelMapper
         private static void UpdateEmbyChannelMappings(string embySite, string authToken, string providerId, string refreshGuideId, Dictionary<int,string> channelMap)
         {
             var client = new RestClient(embySite);
-            var cancelClient = new RestClient(embySite);
-            cancelClient.Timeout = 500; 
+            client.Timeout = 2000;
             var postRequest = new RestRequest();
-            Thread cancelThread = new Thread(() =>
-            {
-                while (true)
-                {
-                    var cancelScheduleRequest = new RestRequest("ScheduledTasks/Running/" + refreshGuideId, Method.DELETE);
-                    cancelScheduleRequest.AddHeader("X-MediaBrowser-Token", authToken);
-                    var cancelScheduleResponse = cancelClient.Execute(cancelScheduleRequest);
-                    while (cancelScheduleResponse.Content.Equals("") || cancelScheduleResponse.Content.Contains("504 Gateway Time-out"))
-                    {
-                        cancelClient.Execute(cancelScheduleRequest);
-                    }
-                    if (cancelScheduleResponse.Content.Contains("Cannot cancel a Task unless it is in the Running state"))
-                    {
-                        //Thread.Sleep(500);
-                    }
-                }
-            });
-            cancelThread.Start();
+
+            //Create Timer to cancel Refresh Guide Task as it holds up the mapping calls.
+            System.Timers.Timer cancelTimer = new System.Timers.Timer();
+            cancelTimer.Elapsed += (sender, e) => cancelRefreshGuideEvent(sender, e, embySite, authToken, refreshGuideId);
+            cancelTimer.Interval = 1000;
+            cancelTimer.Start();
+
             //For each Channel Mapping in Dictionary, try and import it.
             foreach (KeyValuePair<int,string> curChanMap in channelMap)
             {
@@ -282,10 +269,18 @@ namespace EmbyChannelMapper
                 postRequest.AddParameter("ProviderChannelNumber", curChanMap.Value);
                 var response = client.Execute(postRequest);
                 var content = response.Content;
+                int i = 0;
                 while (content.Equals("") || content.Contains("504 Gateway Time-out"))
                 {
                     response = client.Execute(postRequest);
                     content = response.Content;
+                    if (i > 10)
+                    {
+                        Console.WriteLine(curChanMap.Key + ", " + curChanMap.Value);
+                        Console.WriteLine(content);
+                        Console.WriteLine(response.ErrorMessage);
+                        Console.WriteLine(response.ErrorException);
+                    }
                 }
 
                 //The channel does not exist in Emby so we can skip it.
@@ -295,7 +290,7 @@ namespace EmbyChannelMapper
                 }
                 else Console.WriteLine("Channel: " + curChanMap.Key + " Mapped: " + curChanMap.Value + ": \n" + response.Content);
             }
-            cancelThread.Abort();
+            cancelTimer.Stop();
 
         }
 
@@ -312,10 +307,11 @@ namespace EmbyChannelMapper
             string md5Password = MD5HashPassword(password);
             var client = new RestClient(embySite);
             var request = new RestRequest("Users/AuthenticateByName", Method.POST);
+            request.AddHeader("Authorization", "MediaBrowser UserId=\"\", Client=\"ChannelMapper\", Device=\"ChannelMapper\", DeviceId=\"ChannelMapper\", Version=\"1.0.0.0\"");
             request.AddParameter("Username", username);
             request.AddParameter("Password", sha1Password);
             request.AddParameter("PasswordMd5", md5Password);
-            request.AddHeader("Authorization", "MediaBrowser UserId=\"\", Client=\"ChannelMapper\", Device=\"ChannelMapper\", DeviceId=\"ChannelMapper\", Version=\"1.0.0.0\"");
+            
 
             IRestResponse response = client.Execute(request);
             var content = response.Content;
@@ -418,7 +414,23 @@ namespace EmbyChannelMapper
             content = content.Substring(content.IndexOf("\"RefreshGuide\",\"Id\":")+21);
             content = content.Substring(0, content.IndexOf("\"},"));
             return content;
+        }
 
+
+        //Method to be used with a timer to cancel the Refresh Guide task every n milliseconds.
+        private static void cancelRefreshGuideEvent(object source, ElapsedEventArgs e, string embySite, string authToken, string refreshGuideId)
+        {
+            var client = new RestClient(embySite);
+            client.Timeout = 750;
+            var request = new RestRequest("ScheduledTasks/" + refreshGuideId, Method.GET);
+            request.AddHeader("X-MediaBrowser-Token", authToken);
+            var response = client.Execute(request);
+            if (response.Content.Contains("\"State\":\"Running\""))
+            {
+                var cancelScheduleRequest = new RestRequest("ScheduledTasks/Running/" + refreshGuideId, Method.DELETE);
+                cancelScheduleRequest.AddHeader("X-MediaBrowser-Token", authToken);
+                var cancelScheduleResponse = client.Execute(cancelScheduleRequest);
+            }
         }
 
         /// <summary>
